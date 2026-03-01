@@ -1,9 +1,10 @@
 """Quantum circuit visualisation."""
 
-from typing import Optional
+from typing import Optional, Sequence, Any
 
 
 DEFAULT_LABELS = "abcdefghijklmnopqrstuvwxyz"
+# DEFAULT_LABELS = ["c₁", "c₂", "c₃", "t"]
 
 
 def iweave(iter1, iter2):
@@ -53,6 +54,25 @@ class BinaryExpression:
     def __init__(self, expr: set[frozenset]):
         self.expr = set(frozenset(term) for term in expr)
 
+    @classmethod
+    def one(cls):
+        """Creates a binary expression representing 1."""
+        return cls({frozenset()})
+
+    @classmethod
+    def zero(cls):
+        """Creates a binary expression representing 0."""
+        return cls(set())
+
+    @classmethod
+    def singleton(cls, key: int):
+        """Creates a singleton binary expression with the given key.
+
+        `key` is used to index a list or dictionary of labels in order to
+        distinguish it from other variables.
+        """
+        return cls({frozenset({key})})
+
     def __iter__(self):
         return iter(self.expr)
 
@@ -66,6 +86,22 @@ class BinaryExpression:
         if isinstance(other, BinaryExpression):
             return self.expr == other.expr
         return self.expr == other
+
+    def __hash__(self):
+        return hash(frozenset(self.expr))
+
+    def __str__(self):
+        return self.drawable()
+
+    __repr__ = __str__  # Keeping for exploration on the command line.
+
+    def variables(self):
+        """Returns the set of variable names appearing in the expression."""
+        return frozenset.union(*self.expr)
+
+    def n_variables(self):
+        """Returns the number of distinct variables in the expression."""
+        return len(self.variables())
 
     def multiply_by_term(self, term: set | frozenset):
         """Multiplies the expression by a single term, as a set."""
@@ -83,35 +119,74 @@ class BinaryExpression:
             result ^= self.multiply_by_term(term).expr
         return self.__class__(result)
 
-    def drawable(self, labels: str | list[str] = DEFAULT_LABELS):
+    def drawable(self, labels: str | list[str] = None):
         """Creates a human-readable algebraic expression."""
+
+        if labels is None:
+            labels = DEFAULT_LABELS
+
+        terms = self.ordered_terms()
+        if len(terms) == 0:
+            return "0"
 
         def _interpret_term(t):
             if len(t) == 0:
                 return "1"
             return "".join(labels[k] for k in t)
 
-        return " ⨁ ".join(_interpret_term(t) for t in self.ordered_terms())
+        return " ⨁ ".join(_interpret_term(t) for t in terms)
 
-    def draw(self, labels: str | list[str] = DEFAULT_LABELS):
+    def draw(self, labels: str | list[str] = None):
         """Prints a human-readable algebraic expression."""
         print(self.drawable(labels))
 
-    @classmethod
-    def one(cls):
-        """Creates a binary expression representing 1."""
-        return cls({frozenset()})
-
-    def invert(self):
+    def inverted(self):
         """Adds 1 to the expression. Equivalent to a single-qubit not gate."""
         return self + self.one()
 
     def ordered_terms(self):
         """Returns a sorted collection of terms in the expression."""
         def key(x):
-            return "".join(chr(i) for i in sorted(x))
+            return "".join(chr(i) for i in x)
         ordered = [sorted(f) for f in self.expr]
         return sorted(ordered, key=key)
+
+    def evaluate(self, in_: Sequence[bool] | dict[Any, bool]):
+        """Evaluates the expression on the given boolean inputs."""
+        value = False
+        for term in self.ordered_terms():
+            value ^= all(in_[i] for i in term)
+        return value
+
+    def iter_truth_table(self, reverse: bool = False):
+        """Generates rows of the truth table for the expression."""
+        n = self.n_variables()
+        for i in range(2 ** n):
+            # Finds which bits in `i` are set.
+            args = [(i & (2 ** m)) == 2 ** m for m in range(n)]
+            if reverse:
+                args.reverse()
+            yield args, self.evaluate(args)
+
+    def draw_truth_table(
+        self, reverse: bool = False, labels: str | list[str] = None
+    ):
+        """Prints a human-readable truth table for the expression."""
+
+        if labels is None:
+            labels = DEFAULT_LABELS
+
+        variables = sorted(self.variables())
+        column_labels = " ".join(map(labels.__getitem__, variables))
+        expr = self.drawable()
+        print(column_labels, "|", expr)
+
+        separator = "-" * (len(column_labels) + 1)
+        separator += "|" + "-" * (len(expr) + 1)
+        print(separator)
+
+        for args, value in self.iter_truth_table(reverse):
+            print(*[int(a) for a in args], "|", int(value))
 
     @staticmethod
     def _add_mod2(set_: set, other):
@@ -136,6 +211,9 @@ class BinaryExpression:
             return NotImplemented
         return self
 
+    __xor__ = __add__
+    __ixor__ = __iadd__
+
     def __mul__(self, other):
         if isinstance(other, BinaryExpression):
             return self.multiply_by_expr(other.expr)
@@ -144,6 +222,146 @@ class BinaryExpression:
         if isinstance(other, (set, frozenset)):
             return self.multiply_by_term(other)
         return NotImplemented
+
+
+class ExponentExpression:
+    """An arithmetic combination of `BinaryExpressions`.
+
+    Such expressions appear as exponents of general unitary gates. While mostly
+    a notational trick, these expressions are helpful in understanding the
+    effect of general controlled unitary gates by allowing negative expressions
+    and values of 2 and greater.
+    """
+
+    def __init__(
+        self,
+        positive: list[BinaryExpression] = None,
+        negative: list[BinaryExpression] = None,
+    ):
+        self.positive = positive or []
+        self.negative = negative or []
+
+    @classmethod
+    def one(cls):
+        return cls(positive=[BinaryExpression.one()])
+
+    @classmethod
+    def zero(cls):
+        return cls(positive=[BinaryExpression.zero()])
+
+    def __str__(self):
+        return self.drawable()
+
+    __repr__ = __str__
+
+    def variables(self):
+        """Returns the set of variable names appearing in the expression."""
+        v_sets = (b.variables() for b in self.positive + self.negative)
+        return frozenset.union(*v_sets)
+
+    def n_variables(self):
+        """Returns the number of distinct variables in the expression."""
+        return len(self.variables())
+
+    def drawable(self, labels: str | list[str] = None):
+        """Creates a human-readable algebraic expression."""
+
+        if labels is None:
+            labels = DEFAULT_LABELS
+
+        pos = " + ".join(p.drawable(labels) for p in self.positive)
+        neg = " - ".join(n.drawable(labels) for n in self.negative)
+
+        if neg != "":
+            return pos + " - " + neg
+        return pos
+
+    def draw(self, labels: str | list[str] = None):
+        """Prints a human-readable algebraic expression."""
+        print(self.drawable(labels))
+
+    def evaluate(self, in_: Sequence[bool] | dict[Any, bool]):
+        """Evaluates the expression on the given boolean inputs."""
+        pos = sum(p.evaluate(in_) for p in self.positive)
+        neg = sum(n.evaluate(in_) for n in self.negative)
+        return pos - neg
+
+    def iter_truth_table(self, reverse: bool = False):
+        """Generates rows of the truth table for the expression."""
+        n = self.n_variables()
+        for i in range(2 ** n):
+            # Finds which bits in `i` are set.
+            args = [(i & (2 ** m)) == 2 ** m for m in range(n)]
+            if reverse:
+                args.reverse()
+            yield args, self.evaluate(args)
+
+    def draw_truth_table(
+        self, reverse: bool = False, labels: str | list[str] = None
+    ):
+        """Prints a human-readable truth table for the expression."""
+
+        if labels is None:
+            labels = DEFAULT_LABELS
+
+        variables = sorted(self.variables())
+        column_labels = " ".join(map(labels.__getitem__, variables))
+        expr = self.drawable()
+        print(column_labels, "|", expr)
+
+        separator = "-" * (len(column_labels) + 1)
+        separator += "|" + "-" * (len(expr) + 1)
+        print(separator)
+
+        for args, value in self.iter_truth_table(reverse):
+            print(*[int(a) for a in args], "|", int(value))
+
+    def __add__(self, other):
+        if isinstance(other, ExponentExpression):
+            return self.__class__(
+                positive=self.positive + other.positive,
+                negative=self.negative + other.negative,
+            )
+        if isinstance(other, BinaryExpression):
+            return self.__class__(
+                positive=self.positive + [other], negative=self.negative
+            )
+        return NotImplemented
+
+    def __iadd__(self, other):
+        if isinstance(other, ExponentExpression):
+            self.positive.extend(other.positive)
+            self.negative.extend(other.negative)
+            return self
+        if isinstance(other, BinaryExpression):
+            self.positive.append(other)
+            return self
+        return NotImplemented
+
+    def __sub__(self, other):
+        if isinstance(other, ExponentExpression):
+            return self.__class__(
+                positive=self.positive + other.negative,
+                negative=self.negative + other.positive,
+            )
+        if isinstance(other, BinaryExpression):
+            return self.__class__(
+                positive=self.positive, negative=self.negative + [other]
+            )
+        return NotImplemented
+
+    def __isub__(self, other):
+        if isinstance(other, ExponentExpression):
+            self.positive.extend(other.negative)
+            self.negative.extend(other.positive)
+            return self
+        if isinstance(other, BinaryExpression):
+            self.negative.append(other)
+            return self
+        return NotImplemented
+
+    def __neg__(self):
+        return self.__class__(positive=self.negative, negative=self.positive)
 
 
 class Gate:
@@ -164,7 +382,8 @@ class Gate:
     singletons = {
         "I": "---",
         "i": "-|-",
-        "+": "-⨁-",  # "-⊕-",
+        # "+": "-⨁-",
+        "+": "-⊕-",
         "C": "-●-",
         "O": "-○-",
         "X": "-✕-",
@@ -172,8 +391,8 @@ class Gate:
 
     def __init__(self, sequence: str):
         sequence = sequence.upper()
-        midseq = sequence.strip("I").replace("I", "i")
-        self.sequence = sequence.replace(midseq.upper(), midseq)
+        midseq = sequence.strip("I")
+        self.sequence = sequence.replace(midseq, midseq.replace("I", "i"))
         self.validate()
 
     def __len__(self):
@@ -233,15 +452,12 @@ class Gate:
         control = _str_findall(self.sequence, "C")
         anticontrol = _str_findall(self.sequence, "O")
 
-        try:
-            product = states[next(control)]
-        except StopIteration:
-            product = BinaryExpression.one()
+        product = BinaryExpression.one()
 
         for idx in control:
             product *= states[idx]
         for idx in anticontrol:
-            product *= states[idx].invert()
+            product *= states[idx].inverted()
 
         return product
 
@@ -283,6 +499,9 @@ class Gate:
             )
         self.sequence = base.ljust(size, "I")
 
+    def to_circuit(self):
+        return Circuit([self])
+
     def __or__(self, other):
         if isinstance(other, str):
             other = Gate(other)
@@ -290,6 +509,7 @@ class Gate:
             return Circuit([self, other])
         if isinstance(other, Circuit):
             return Circuit([self] + other.gates, max(self.size, other.width))
+        return NotImplemented
 
 
 class Circuit:
@@ -307,9 +527,12 @@ class Circuit:
     """
 
     def __init__(self, gates: list[str | Gate], n_qubits: int = None):
-        self.__n_qubits = n_qubits
         if n_qubits is None:
-            self.__n_qubits = max(len(gate) for gate in gates)
+            if len(gates) > 0:
+                n_qubits = max(len(gate) for gate in gates)
+            else:
+                n_qubits = 0
+        self.__n_qubits = n_qubits
 
         self.gates: list[Gate] = []
         for gate in gates:
@@ -330,7 +553,9 @@ class Circuit:
     @property
     def min_width(self):
         """The minimum width the circuit can be resized to."""
-        return max(gate.min_size for gate in self.gates)
+        if self.length > 0:
+            return max(gate.min_size for gate in self.gates)
+        return 0
 
     def __len__(self):
         return len(self.gates)
@@ -341,6 +566,11 @@ class Circuit:
         if isinstance(item, Gate):
             return item
         return self.__class__(item, self.width)
+
+    def __str__(self):
+        return "\n".join("".join(line) for line in self._drawable_lines())
+
+    __repr__ = __str__  # Keeping for exploration on the command line.
 
     def resize_circuit(self, n_qubits: int = None):
         """Resizes the circuit and its gates.
@@ -353,6 +583,8 @@ class Circuit:
         if n_qubits is None:
             n_qubits = min_width
 
+        if n_qubits == self.width:
+            return
         if n_qubits < min_width:
             raise ValueError(
                 f"target width {n_qubits} is less than "
@@ -425,30 +657,34 @@ class Circuit:
     def _format_output(self, labels: str | list[str]):
         """Formats the output states so that they can be drawn."""
         output = [" " + expr.drawable(labels) for expr in self.run()]
-        spaces = [""] * (self.width)
+        spaces = [""] * self.width
         return weave(output, spaces)
 
-    def draw(self, labels: Optional[str | list[str]] = None):
-        """Prints a graphical representation of the circuit."""
+    def _drawable_lines(self, labels=None):
+        """Generates printable lines."""
 
         if labels is None:
             labels = DEFAULT_LABELS
 
         symbols = [gate.symbols() for gate in self.gates]
 
-        if len(labels) >= self.width:
+        if len(symbols) > 0 and len(labels) >= self.width:
             output = self._format_output(labels)
             labels = self._format_labels(labels)
             symbols = [labels] + symbols + [output]
 
-        for line in zip(*symbols):
+        return zip(*symbols)
+
+    def draw(self, labels: Optional[str | list[str]] = None):
+        """Prints a graphical representation of the circuit."""
+        for line in self._drawable_lines(labels):
             print(*line, sep="")
 
     def initial_state(self):
         """Creates the initial state for the circuit."""
         states = []
         for i in range(self.width):
-            states.append(BinaryExpression({frozenset([i])}))
+            states.append(BinaryExpression.singleton(i))
         return states
 
     def run(self, states: list[BinaryExpression] = None):
@@ -462,6 +698,14 @@ class Circuit:
 
         return states
 
+    def product(self, *idxs):
+        """Finds the product of the output states at the given indexes."""
+        states = self.run()
+        product = BinaryExpression.one()
+        for idx in idxs:
+            product *= states[idx]
+        return product
+
     def __or__(self, other):
         cls = self.__class__
         if isinstance(other, str):
@@ -470,6 +714,7 @@ class Circuit:
             return cls(self.gates + [other], self.width)
         if isinstance(other, Circuit):
             return cls(self.gates + other.gates, max(self.width, other.width))
+        return NotImplemented
 
     def __ior__(self, other):
         if isinstance(other, str):
@@ -479,4 +724,6 @@ class Circuit:
         elif isinstance(other, Circuit):
             for gate in other.gates:
                 self.add_gate(gate, resize_circuit=True)
+        else:
+            return NotImplemented
         return self
