@@ -96,7 +96,7 @@ class BinaryExpression:
     __repr__ = __str__  # Keeping for exploration on the command line.
 
     def variables(self):
-        """Returns the set of variable names appearing in the expression."""
+        """Returns the set of variable keys appearing in the expression."""
         return frozenset.union(*self.expr)
 
     def n_variables(self):
@@ -158,35 +158,8 @@ class BinaryExpression:
             value ^= all(in_[i] for i in term)
         return value
 
-    def iter_truth_table(self, reverse: bool = False):
-        """Generates rows of the truth table for the expression."""
-        n = self.n_variables()
-        for i in range(2 ** n):
-            # Finds which bits in `i` are set.
-            args = [(i & (2 ** m)) == 2 ** m for m in range(n)]
-            if reverse:
-                args.reverse()
-            yield args, self.evaluate(args)
-
-    def draw_truth_table(
-        self, reverse: bool = False, labels: str | list[str] = None
-    ):
-        """Prints a human-readable truth table for the expression."""
-
-        if labels is None:
-            labels = DEFAULT_LABELS
-
-        variables = sorted(self.variables())
-        column_labels = " ".join(map(labels.__getitem__, variables))
-        expr = self.drawable()
-        print(column_labels, "|", expr)
-
-        separator = "-" * (len(column_labels) + 1)
-        separator += "|" + "-" * (len(expr) + 1)
-        print(separator)
-
-        for args, value in self.iter_truth_table(reverse):
-            print(*[int(a) for a in args], "|", int(value))
+    def truth_table(self):
+        return TruthTable([self])
 
     @staticmethod
     def _add_mod2(set_: set, other):
@@ -255,7 +228,7 @@ class ExponentExpression:
     __repr__ = __str__
 
     def variables(self):
-        """Returns the set of variable names appearing in the expression."""
+        """Returns the set of variable keys appearing in the expression."""
         v_sets = (b.variables() for b in self.positive + self.negative)
         return frozenset.union(*v_sets)
 
@@ -286,35 +259,8 @@ class ExponentExpression:
         neg = sum(n.evaluate(in_) for n in self.negative)
         return pos - neg
 
-    def iter_truth_table(self, reverse: bool = False):
-        """Generates rows of the truth table for the expression."""
-        n = self.n_variables()
-        for i in range(2 ** n):
-            # Finds which bits in `i` are set.
-            args = [(i & (2 ** m)) == 2 ** m for m in range(n)]
-            if reverse:
-                args.reverse()
-            yield args, self.evaluate(args)
-
-    def draw_truth_table(
-        self, reverse: bool = False, labels: str | list[str] = None
-    ):
-        """Prints a human-readable truth table for the expression."""
-
-        if labels is None:
-            labels = DEFAULT_LABELS
-
-        variables = sorted(self.variables())
-        column_labels = " ".join(map(labels.__getitem__, variables))
-        expr = self.drawable()
-        print(column_labels, "|", expr)
-
-        separator = "-" * (len(column_labels) + 1)
-        separator += "|" + "-" * (len(expr) + 1)
-        print(separator)
-
-        for args, value in self.iter_truth_table(reverse):
-            print(*[int(a) for a in args], "|", int(value))
+    def truth_table(self):
+        return TruthTable([self])
 
     def __add__(self, other):
         if isinstance(other, ExponentExpression):
@@ -479,14 +425,28 @@ class Gate:
 
         return states[:l] + [lswap] + states[l + 1:r] + [rswap] + states[r + 1:]
 
-    def apply(self, states: list[BinaryExpression]):
+    def initial_state(self):
+        """Creates the initial state for the circuit."""
+        states = []
+        for i in range(self.size):
+            states.append(BinaryExpression.singleton(i))
+        return states
+
+    def apply(self, states: list[BinaryExpression] = None):
         """Applies the gate to a list of states, returning the output."""
+
+        if states is None:
+            states = self.initial_state()
+
         states = list(states)
         if "+" in self.sequence:
             return self._apply_cnot(states)
         if "X" in self.sequence:
             return self._apply_fredkin(states)
         return states
+
+    def truth_table(self):
+        return TruthTable(self.apply())
 
     def resize(self, size: int):
         """Resizes the gate."""
@@ -698,6 +658,9 @@ class Circuit:
 
         return states
 
+    def truth_table(self):
+        return TruthTable(self.run())
+
     def product(self, *idxs):
         """Finds the product of the output states at the given indexes."""
         states = self.run()
@@ -727,3 +690,132 @@ class Circuit:
         else:
             return NotImplemented
         return self
+
+
+class TruthTable:
+    def __init__(
+            self, expressions: list[BinaryExpression | ExponentExpression]
+        ):
+        self.expressions = expressions
+
+    def variables(self):
+        """Returns the set of variable keys appearing in the expressions."""
+        return frozenset.union(*(expr.variables() for expr in self.expressions))
+
+    def _integer_keys(self):
+        """Finds the variable keys which are integers."""
+        return [i for i in self.variables() if isinstance(i, int)]
+
+    def n_variables(self):
+        """Returns the number of distinct variables in the expressions."""
+        return len(self.variables())
+
+    def column_names(self, labels: str | list[str]):
+        """Returns a list of column names for the truth table."""
+
+        n = len(self.expressions)
+        if n == 1:
+            return [self.expressions[0].drawable()]
+
+        start_key = max(self._integer_keys()) + 1
+        return labels[start_key:start_key + n]
+
+    def _create_reference_lines(self, labels: str | list[str]):
+        """Creates references between column labels and their expressions."""
+
+        column_names = self.column_names(labels)
+
+        if len(column_names) < 2:
+            return []
+
+        lines = ["", "Expressions:"]
+        for label, expr in zip(column_names, self.expressions):
+            lines.append(f"{label} = {expr.drawable(labels)}")
+
+        return lines
+
+    def evaluate_expressions(self, in_: Sequence[bool] | dict[Any, bool]):
+        """Evaluates the expressions on the given boolean inputs."""
+        return [int(expr.evaluate(in_)) for expr in self.expressions]
+
+    def iter_rows(self, reverse: bool = False):
+        """Generates rows of the truth table for the expressions."""
+        n = self.n_variables()
+        for i in range(2 ** n):
+            # Finds which bits in `i` are set.
+            args = [int((i & (2 ** m)) == 2 ** m) for m in range(n)]
+            if reverse:
+                args.reverse()
+            yield args, self.evaluate_expressions(args)
+
+    def _create_header_row(self, labels: str | list[str]):
+        """Creates the header row of the truth table."""
+        variables = sorted(self.variables())
+        var_labels = list(map(labels.__getitem__, variables))
+
+        columns = self.column_names(labels)
+        return var_labels + weave(["|"] * len(columns), columns)
+
+    def _format_row(self, row: tuple[list, list]):
+        """Formats a row of the truth table."""
+        args, values = row
+        args = [str(a) for a in args]
+        columns = weave(["|"] * len(values), [str(v) for v in values])
+        return args + columns
+
+    def _collect_rows(
+        self, reverse: bool, labels: str | list[str]
+    ):
+        """Collects rows of the truth table."""
+        rows = [self._create_header_row(labels)]
+        for row in self.iter_rows(reverse):
+            rows.append(self._format_row(row))
+
+        return rows
+
+    def _create_separator(self, row):
+        """Creates separator line between header and data rows."""
+        separator = []
+        for item in row:
+            if item == "|":
+                separator.append("|")
+            else:
+                separator.append("-" * len(item))
+        return "-".join(separator) + "-"
+
+    def _drawable_lines(
+        self, reverse: bool, labels: str | list[str]
+    ):
+        """Creates drawable lines of the truth table."""
+
+        rows = self._collect_rows(reverse, labels)
+        columns = zip(*rows, strict=True)
+        # Finds the max length in each column.
+        max_lengths = list(map(lambda c: max(map(len, c)), columns))
+
+        # Pads each item in the row to fit the max length in the column.
+        for row in rows:
+            for i in range(len(row)):
+                row[i] = row[i].ljust(max_lengths[i])
+
+        separator = [self._create_separator(rows[0])]
+        tail = self._create_reference_lines(labels)
+        rows = [" ".join(row) for row in rows]
+
+        return rows[0:1] + separator + rows[1:] + tail
+
+    def drawable(self, reverse: bool = False, labels: str | list[str] = None):
+        """Creates a human-readable representation of the truth table."""
+        if labels is None:
+            labels = DEFAULT_LABELS
+
+        return "\n".join(self._drawable_lines(reverse, labels))
+
+    def draw(self, reverse: bool = False, labels: str | list[str] = None):
+        """Prints a human-readable truth table for the expressions."""
+        print(self.drawable(reverse, labels))
+
+    def __str__(self):
+        return self.drawable()
+
+    __repr__ = __str__

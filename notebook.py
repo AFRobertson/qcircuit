@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.17.7"
+__generated_with = "0.20.2"
 app = marimo.App(app_title="qcircuit exploration")
 
 
@@ -62,6 +62,7 @@ def _(circ, rslider):
 def _():
     import marimo as mo
     from circuit import BinaryExpression, Gate, Circuit
+
     return Circuit, mo
 
 
@@ -69,6 +70,22 @@ def _():
 def _(Circuit):
     circ = Circuit(["I+C", "+CC", "C+C", "I+C", "CI+"], 3)
     return (circ,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### truth table
+    """)
+    return
+
+
+@app.cell
+def _(circ, gate_str, remove_button):
+    remove_button
+    gate_str
+    circ.truth_table()
+    return
 
 
 if __name__ == "__main__":
