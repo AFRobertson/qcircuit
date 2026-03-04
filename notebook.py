@@ -61,7 +61,7 @@ def _(circ, rslider):
 @app.cell
 def _():
     import marimo as mo
-    from circuit import BinaryExpression, Gate, Circuit
+    from circuit import BooleanExpression, Gate, Circuit
 
     return Circuit, mo
 

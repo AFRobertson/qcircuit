@@ -38,7 +38,7 @@ def _str_findall(str_: str, char: str):
             yield idx
 
 
-class BinaryExpression:
+class BooleanExpression:
     """Representation of a boolean arithmetic expression."""
 
     # The underlying data structure is a set of frozensets. The frozensets
@@ -55,23 +55,52 @@ class BinaryExpression:
         self.expr = set(frozenset(term) for term in expr)
 
     @classmethod
-    def one(cls):
-        """Creates a binary expression representing 1."""
-        return cls({frozenset()})
-
-    @classmethod
     def zero(cls):
-        """Creates a binary expression representing 0."""
+        """Creates a boolean expression representing 0."""
         return cls(set())
 
     @classmethod
+    def one(cls):
+        """Creates a boolean expression representing 1."""
+        return cls({frozenset()})
+
+    @classmethod
+    def from_int(cls, n: int):
+        """Converts an integer `{0 | 1}` into a boolean expression."""
+        if n == 0:
+            return cls.zero()
+        if n == 1:
+            return cls.one()
+        raise ValueError("argument must have value 0 or 1.")
+
+    @classmethod
     def singleton(cls, key: int):
-        """Creates a singleton binary expression with the given key.
+        """Creates a singleton boolean expression with the given key.
 
         `key` is used to index a list or dictionary of labels in order to
         distinguish it from other variables.
         """
         return cls({frozenset({key})})
+
+    @property
+    def is_zero(self):
+        """Whether the expression is 0."""
+        return self == self.zero()
+
+    @property
+    def is_one(self):
+        """Whether the expression is 1."""
+        return self == self.one()
+
+    @property
+    def is_integral(self):
+        """Whether the expression is 0 or 1."""
+        return self.is_zero or self.is_one
+
+    @property
+    def is_singleton(self):
+        """Whether the expression is a single variable."""
+        return len(self) == 1 and all(len(i) == 1 for i in self)
 
     def __iter__(self):
         return iter(self.expr)
@@ -83,7 +112,7 @@ class BinaryExpression:
         return len(self.expr)
 
     def __eq__(self, other):
-        if isinstance(other, BinaryExpression):
+        if isinstance(other, BooleanExpression):
             return self.expr == other.expr
         return self.expr == other
 
@@ -94,6 +123,9 @@ class BinaryExpression:
         return self.drawable()
 
     __repr__ = __str__  # Keeping for exploration on the command line.
+
+    def __bool__(self):
+        return bool(self.expr)
 
     def variables(self):
         """Returns the set of variable keys appearing in the expression."""
@@ -161,14 +193,15 @@ class BinaryExpression:
     def truth_table(self):
         return TruthTable([self])
 
-    @staticmethod
-    def _add_mod2(set_: set, other):
+    def _add_mod2(self, set_: set, other):
         """Helper for updating a binary expression."""
-        if isinstance(other, BinaryExpression):
+        if isinstance(other, int):
+            other = self.from_int(other)
+        if isinstance(other, BooleanExpression):
             set_.symmetric_difference_update(other.expr)
-        elif isinstance(other, set[frozenset]):
+        elif isinstance(other, set):
             set_.symmetric_difference_update(other)
-        elif isinstance(other, (set, frozenset)):
+        elif isinstance(other, frozenset):
             set_add_mod2(set_, other)
         else:
             return NotImplemented
@@ -188,11 +221,13 @@ class BinaryExpression:
     __ixor__ = __iadd__
 
     def __mul__(self, other):
-        if isinstance(other, BinaryExpression):
+        if isinstance(other, int):
+            other = self.from_int(other)
+        if isinstance(other, BooleanExpression):
             return self.multiply_by_expr(other.expr)
-        if isinstance(other, set[frozenset]):
+        if isinstance(other, set):
             return self.multiply_by_expr(other)
-        if isinstance(other, (set, frozenset)):
+        if isinstance(other, frozenset):
             return self.multiply_by_term(other)
         return NotImplemented
 
@@ -208,19 +243,50 @@ class ExponentExpression:
 
     def __init__(
         self,
-        positive: list[BinaryExpression] = None,
-        negative: list[BinaryExpression] = None,
+        positive: list[BooleanExpression] = None,
+        negative: list[BooleanExpression] = None,
     ):
         self.positive = positive or []
         self.negative = negative or []
 
-    @classmethod
-    def one(cls):
-        return cls(positive=[BinaryExpression.one()])
+        self._simplify()
 
     @classmethod
     def zero(cls):
-        return cls(positive=[BinaryExpression.zero()])
+        """Creates an exponent expression representing 0."""
+        return cls(positive=[BooleanExpression.zero()])
+
+    @classmethod
+    def one(cls):
+        """Creates an exponent expression representing 1."""
+        return cls(positive=[BooleanExpression.one()])
+
+    @classmethod
+    def from_int(cls, n: int):
+        """Converts an integer into an exponent expression."""
+        if n == 0:
+            return cls.zero()
+        if n > 0:
+            return cls(positive=[BooleanExpression.one()] * n)
+        return cls(negative=[BooleanExpression.one()] * (-n))
+
+    @property
+    def is_zero(self) -> bool:
+        """Whether the exponent expression is zero."""
+        return all(expr.is_zero for expr in self.positive + self.negative)
+
+    @property
+    def is_integral(self) -> bool:
+        """Whether the expression is an integer."""
+        return all(expr.is_integral for expr in self.positive + self.negative)
+
+    def _simplify(self):
+        """Simplifies expression by removing common summands."""
+
+        for idx in reversed(range(len(self.positive))):
+            if self.positive[idx] in self.negative:
+                v = self.positive.pop(idx)
+                self.negative.remove(v)
 
     def __str__(self):
         return self.drawable()
@@ -239,15 +305,24 @@ class ExponentExpression:
     def drawable(self, labels: str | list[str] = None):
         """Creates a human-readable algebraic expression."""
 
+        if self.is_zero:
+            return "0"
+
         if labels is None:
             labels = DEFAULT_LABELS
 
-        pos = " + ".join(p.drawable(labels) for p in self.positive)
-        neg = " - ".join(n.drawable(labels) for n in self.negative)
+        pos = " + ".join(
+            p.drawable(labels) for p in self.positive if not p.is_integral
+        )
+        neg = " - ".join(
+            n.drawable(labels) for n in self.negative if not n.is_integral
+        )
 
-        if neg != "":
-            return pos + " - " + neg
-        return pos
+        one = BooleanExpression.one()
+        integral = self.positive.count(one) - self.negative.count(one)
+        integral = "" if integral == 0 else str(integral)
+
+        return integral + " + " * bool(pos) + pos + " - " * bool(neg) + neg
 
     def draw(self, labels: str | list[str] = None):
         """Prints a human-readable algebraic expression."""
@@ -268,7 +343,7 @@ class ExponentExpression:
                 positive=self.positive + other.positive,
                 negative=self.negative + other.negative,
             )
-        if isinstance(other, BinaryExpression):
+        if isinstance(other, BooleanExpression):
             return self.__class__(
                 positive=self.positive + [other], negative=self.negative
             )
@@ -279,7 +354,7 @@ class ExponentExpression:
             self.positive.extend(other.positive)
             self.negative.extend(other.negative)
             return self
-        if isinstance(other, BinaryExpression):
+        if isinstance(other, BooleanExpression):
             self.positive.append(other)
             return self
         return NotImplemented
@@ -290,7 +365,7 @@ class ExponentExpression:
                 positive=self.positive + other.negative,
                 negative=self.negative + other.positive,
             )
-        if isinstance(other, BinaryExpression):
+        if isinstance(other, BooleanExpression):
             return self.__class__(
                 positive=self.positive, negative=self.negative + [other]
             )
@@ -301,7 +376,7 @@ class ExponentExpression:
             self.positive.extend(other.negative)
             self.negative.extend(other.positive)
             return self
-        if isinstance(other, BinaryExpression):
+        if isinstance(other, BooleanExpression):
             self.negative.append(other)
             return self
         return NotImplemented
@@ -310,12 +385,124 @@ class ExponentExpression:
         return self.__class__(positive=self.negative, negative=self.positive)
 
 
+class UnitaryExpression:
+    """Representation of a unitary operator acting on a boolean expression.
+
+    The expression has form `U^[exponent](operand) ⨁ addend`.
+
+    This class provides tools to visualize the classical combination of a
+    unitary gate U with controlled-not and Fredkin gates. It does not simulate a
+    general unitary operator. Therefore, multiplication with non-integral
+    expressions is not implemented, as it would involve handling superpositions
+    of boolean expressions.
+    """
+
+    def __init__(
+        self,
+        exponent: ExponentExpression | int,
+        operand: BooleanExpression | 'UnitaryExpression' | int,
+        addend: BooleanExpression | 'UnitaryExpression' | int = 0,
+        symbol: str = "U",
+    ):
+        self.symbol = symbol
+
+        if isinstance(exponent, int):
+            exponent = ExponentExpression.from_int(exponent)
+        if isinstance(operand, int):
+            operand = BooleanExpression.from_int(operand)
+        if isinstance(addend, int):
+            addend = BooleanExpression.from_int(addend)
+
+        self.exponent = exponent
+        self.operand = operand
+        self.addend = addend
+
+    @property
+    def expressions(self):
+        """The tuple `(exponent, operand, addend)` of component expressions."""
+        return self.exponent, self.operand, self.addend
+
+    def variables(self):
+        """Returns the set of variable keys appearing in the expression."""
+        e, o, a = self.expressions
+        return e.variables().union(o.variables(), a.variables())
+
+    def n_variables(self):
+        """Returns the number of distinct variables in the expression."""
+        return len(self.variables())
+
+    def drawable(self, labels: str | list[str]):
+        """Creates a human-readable algebraic expression."""
+
+        exponent, operand, addend = self.expressions
+
+        if exponent.is_zero:
+            return (operand + addend).drawable(labels)
+
+        drawable = "{}^[{}]({})".format(
+            self.symbol, exponent.drawable(labels), operand.drawable(labels)
+        )
+
+        if addend.is_zero:
+            return drawable
+
+        return drawable + " ⨁ " + addend.drawable(labels)
+
+    def evaluate(self, in_: Sequence[bool] | dict[Any, bool]):
+        """Evaluates the expression on the given boolean inputs."""
+
+        exponent_value = self.exponent.evaluate(in_)
+
+        if exponent_value == 0:
+            return (self.operand + self.addend).evaluate(in_)
+
+        return self.__class__(
+            exponent_value,
+            self.operand.evaluate(in_),
+            self.addend.evaluate(in_),
+            self.symbol,
+        )
+
+    def __add__(self, other):
+        if isinstance(other, (UnitaryExpression, BooleanExpression, int)):
+            return self.__class__(
+                exponent=self.exponent,
+                target=self.operand,
+                addend=self.addend + other,
+                symbol=self.symbol,
+            )
+        return NotImplemented
+
+    def __iadd__(self, other):
+        if isinstance(other, (UnitaryExpression, BooleanExpression, int)):
+            self.addend += other
+            return self
+        return NotImplemented
+
+    __xor__ = __add__
+    __ixor__ = __iadd__
+
+    def __mul__(self, other):
+        if other in (0, 1):
+            return other and self
+        if isinstance(other, BooleanExpression):
+            if other.is_zero:
+                return BooleanExpression.zero()
+            if other.is_one:
+                return self
+        return NotImplemented
+
+
+# TODO: turn into abstract base class
+Expression = BooleanExpression | ExponentExpression | UnitaryExpression
+
+
 class Gate:
     """Simple quantum CNOT or Fredkin gate.
 
     Parameters
     ----------
-    sequence (str with elements from {'I', '+', 'X', 'C', 'O'})
+    sequence (str with elements from {'I', '+', 'X', 'C', 'O', 'U', "U'"})
         A string representing the action of the gate on the qubits from top to
         bottom:
             - `'I'` is the identity operation and has no effect
@@ -323,6 +510,9 @@ class Gate:
             - `'X'` is one of two targets for a controlled swap operation
             - `'C'` is a control qubit
             - `'O'` is an inverted control qubit
+            - `'U'` is a generic unitary operation
+            - `"U'"` ('U' with a single quotation mark following) is the
+              inverse of U.
     """
 
     singletons = {
@@ -333,10 +523,12 @@ class Gate:
         "C": "-●-",
         "O": "-○-",
         "X": "-✕-",
+        "U": "-U-",
+        "u": "-U̅-",
     }
 
     def __init__(self, sequence: str):
-        sequence = sequence.upper()
+        sequence = sequence.upper().replace("U'", "u")
         midseq = sequence.strip("I")
         self.sequence = sequence.replace(midseq, midseq.replace("I", "i"))
         self.validate()
@@ -378,27 +570,31 @@ class Gate:
         """Prints a graphical representation of the gate."""
         print(*self.symbols(), sep="\n")
 
-    def validate(self):
-        """Validates the sequence representation of the gate."""
-        seq = self.sequence
-        valid = (
-            all(c in self.singletons for c in seq)
-            and not ("+" in seq and "X" in seq)
+    @classmethod
+    def validate_string(cls, seq: str):
+        """Checks whether `seq` is a valid string representation."""
+        return (
+            all(c in cls.singletons for c in seq)
             and (
-                seq.count("+") == 1
-                or seq.count("X") == 2
+                seq.count("+")
+                + seq.count("X") / 2
+                + seq.count("U")
+                + seq.count("u") == 1
             )
         )
-        if not valid:
+
+    def validate(self):
+        """Validates the sequence representation of the gate."""
+        if not self.validate_string(self.sequence):
             raise ValueError("invalid string representation.")
 
-    def _get_control(self, states: list[BinaryExpression]):
+    def _get_control(self, states: list[BooleanExpression]):
         """Returns a product of the control states."""
 
         control = _str_findall(self.sequence, "C")
         anticontrol = _str_findall(self.sequence, "O")
 
-        product = BinaryExpression.one()
+        product = BooleanExpression.one()
 
         for idx in control:
             product *= states[idx]
@@ -407,13 +603,13 @@ class Gate:
 
         return product
 
-    def _apply_cnot(self, states: list[BinaryExpression]):
+    def _apply_cnot(self, states: list[BooleanExpression]):
         """Applies a controlled not operation."""
         target = self.sequence.find("+")
         result = states[target] + self._get_control(states)
         return states[:target] + [result] + states[target + 1:]
 
-    def _apply_fredkin(self, states: list[BinaryExpression]):
+    def _apply_fredkin(self, states: list[BooleanExpression]):
         """Applies a controlled swap operation."""
 
         seq = self.sequence
@@ -425,14 +621,35 @@ class Gate:
 
         return states[:l] + [lswap] + states[l + 1:r] + [rswap] + states[r + 1:]
 
+    def _apply_unitary(self, states: list[BooleanExpression]):
+        """Applies a general unitary operation."""
+
+        exponent = self._get_control(states)
+
+        if "U" in self.sequence:
+            target = self.sequence.find("U")
+        else:
+            target = self.sequence.find("u")
+            exponent = -exponent
+
+        operand = states[target]
+        if isinstance(operand, UnitaryExpression):
+            if operand.symbol == "U" and operand.addend.is_zero:
+                exponent += operand.exponent
+                operand = operand.operand
+
+        result = UnitaryExpression(exponent, operand)
+
+        return states[:target] + [result] + states[target + 1:]
+
     def initial_state(self):
         """Creates the initial state for the circuit."""
         states = []
         for i in range(self.size):
-            states.append(BinaryExpression.singleton(i))
+            states.append(BooleanExpression.singleton(i))
         return states
 
-    def apply(self, states: list[BinaryExpression] = None):
+    def apply(self, states: list[BooleanExpression] = None):
         """Applies the gate to a list of states, returning the output."""
 
         if states is None:
@@ -443,10 +660,16 @@ class Gate:
             return self._apply_cnot(states)
         if "X" in self.sequence:
             return self._apply_fredkin(states)
+        if "U" in self.sequence or "u" in self.sequence:
+            return self._apply_unitary(states)
         return states
 
-    def truth_table(self):
-        return TruthTable(self.apply())
+    def truth_table(self, exclude_singletons: bool = True):
+        """Creates a truth table for the action of the gate."""
+        states = self.apply()
+        if exclude_singletons:
+            states = [s for s in states if not s.is_singleton]
+        return TruthTable(states)
 
     def resize(self, size: int):
         """Resizes the gate."""
@@ -644,10 +867,10 @@ class Circuit:
         """Creates the initial state for the circuit."""
         states = []
         for i in range(self.width):
-            states.append(BinaryExpression.singleton(i))
+            states.append(BooleanExpression.singleton(i))
         return states
 
-    def run(self, states: list[BinaryExpression] = None):
+    def run(self, states: list[BooleanExpression] = None):
         """Applies each gate in sequence to the given input states."""
 
         if states is None:
@@ -658,13 +881,17 @@ class Circuit:
 
         return states
 
-    def truth_table(self):
-        return TruthTable(self.run())
+    def truth_table(self, exclude_singletons: bool = True):
+        """Creates a truth table for the output of the circuit."""
+        states = self.run()
+        if exclude_singletons:
+            states = [s for s in states if not s.is_singleton]
+        return TruthTable(states)
 
     def product(self, *idxs):
         """Finds the product of the output states at the given indexes."""
         states = self.run()
-        product = BinaryExpression.one()
+        product = BooleanExpression.one()
         for idx in idxs:
             product *= states[idx]
         return product
@@ -693,8 +920,10 @@ class Circuit:
 
 
 class TruthTable:
+    """Generates a human-readable truth table for multiple expressions."""
+
     def __init__(
-            self, expressions: list[BinaryExpression | ExponentExpression]
+            self, expressions: list[Expression]
         ):
         self.expressions = expressions
 
@@ -763,9 +992,7 @@ class TruthTable:
         columns = weave(["|"] * len(values), [str(v) for v in values])
         return args + columns
 
-    def _collect_rows(
-        self, reverse: bool, labels: str | list[str]
-    ):
+    def _collect_rows(self, reverse: bool, labels: str | list[str]):
         """Collects rows of the truth table."""
         rows = [self._create_header_row(labels)]
         for row in self.iter_rows(reverse):
@@ -773,7 +1000,7 @@ class TruthTable:
 
         return rows
 
-    def _create_separator(self, row):
+    def _create_separator(self, row: list[str]):
         """Creates separator line between header and data rows."""
         separator = []
         for item in row:
@@ -783,9 +1010,7 @@ class TruthTable:
                 separator.append("-" * len(item))
         return "-".join(separator) + "-"
 
-    def _drawable_lines(
-        self, reverse: bool, labels: str | list[str]
-    ):
+    def _drawable_lines(self, reverse: bool, labels: str | list[str]):
         """Creates drawable lines of the truth table."""
 
         rows = self._collect_rows(reverse, labels)
@@ -800,7 +1025,7 @@ class TruthTable:
 
         separator = [self._create_separator(rows[0])]
         tail = self._create_reference_lines(labels)
-        rows = [" ".join(row) for row in rows]
+        rows = [" ".join(row).rstrip() for row in rows]
 
         return rows[0:1] + separator + rows[1:] + tail
 
@@ -814,6 +1039,10 @@ class TruthTable:
     def draw(self, reverse: bool = False, labels: str | list[str] = None):
         """Prints a human-readable truth table for the expressions."""
         print(self.drawable(reverse, labels))
+
+    def outputs(self, reverse: bool = False):
+        """Returns the list of output columns in the table."""
+        return list(zip(*(row[1] for row in self.iter_rows(reverse))))
 
     def __str__(self):
         return self.drawable()
