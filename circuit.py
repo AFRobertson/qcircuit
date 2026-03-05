@@ -498,7 +498,7 @@ class UnitaryExpression:
         if isinstance(other, (UnitaryExpression, BooleanExpression, int)):
             return self.__class__(
                 exponent=self.exponent,
-                target=self.operand,
+                operand=self.operand,
                 addend=self.addend + other,
                 symbol=self.symbol,
             )
@@ -926,14 +926,16 @@ class Circuit:
             product *= states[idx]
         return product
 
-    def save(self, filepath: str):
+    def save(self, filepath: str, overwrite: bool = False):
         """Saves the circuit to a JSON file."""
         if isinstance(filepath, str) and "." not in filepath:
             filepath += ".json"
 
         sequence = [g.sequence for g in self.gates]
 
-        with open(filepath, "w+") as f:
+        mode = "w+" if overwrite else "x"
+
+        with open(filepath, mode) as f:
             json.dump(sequence, f)
 
     @classmethod
