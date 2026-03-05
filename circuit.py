@@ -1,6 +1,7 @@
 """Quantum circuit visualisation."""
 
-from typing import Optional, Sequence, Any
+from typing import Optional, Sequence, Any, Union
+import json
 
 
 DEFAULT_LABELS = "abcdefghijklmnopqrstuvwxyz"
@@ -85,7 +86,7 @@ class BooleanExpression:
     @property
     def is_zero(self):
         """Whether the expression is 0."""
-        return self == self.zero()
+        return len(self.expr) == 0
 
     @property
     def is_one(self):
@@ -129,6 +130,8 @@ class BooleanExpression:
 
     def variables(self):
         """Returns the set of variable keys appearing in the expression."""
+        if self.is_zero:
+            return frozenset()
         return frozenset.union(*self.expr)
 
     def n_variables(self):
@@ -188,7 +191,7 @@ class BooleanExpression:
         value = False
         for term in self.ordered_terms():
             value ^= all(in_[i] for i in term)
-        return value
+        return int(value)
 
     def truth_table(self):
         return TruthTable([self])
@@ -276,6 +279,11 @@ class ExponentExpression:
         return all(expr.is_zero for expr in self.positive + self.negative)
 
     @property
+    def is_one(self):
+        """Whether the exponent expression is one."""
+        return self.is_integral and self.evaluate([]) == 1
+
+    @property
     def is_integral(self) -> bool:
         """Whether the expression is an integer."""
         return all(expr.is_integral for expr in self.positive + self.negative)
@@ -322,7 +330,8 @@ class ExponentExpression:
         integral = self.positive.count(one) - self.negative.count(one)
         integral = "" if integral == 0 else str(integral)
 
-        return integral + " + " * bool(pos) + pos + " - " * bool(neg) + neg
+        start = integral + " + " * bool(pos and integral) + pos
+        return start + " - " * bool(neg) + neg
 
     def draw(self, labels: str | list[str] = None):
         """Prints a human-readable algebraic expression."""
@@ -400,8 +409,8 @@ class UnitaryExpression:
     def __init__(
         self,
         exponent: ExponentExpression | int,
-        operand: BooleanExpression | 'UnitaryExpression' | int,
-        addend: BooleanExpression | 'UnitaryExpression' | int = 0,
+        operand: Union[BooleanExpression, 'UnitaryExpression', int],
+        addend: Union[BooleanExpression, 'UnitaryExpression', int] = 0,
         symbol: str = "U",
     ):
         self.symbol = symbol
@@ -422,6 +431,11 @@ class UnitaryExpression:
         """The tuple `(exponent, operand, addend)` of component expressions."""
         return self.exponent, self.operand, self.addend
 
+    @property
+    def is_singleton(self):
+        exponent, operand, addend = self.expressions
+        return exponent.is_zero and (operand + addend).is_singleton
+
     def variables(self):
         """Returns the set of variable keys appearing in the expression."""
         e, o, a = self.expressions
@@ -431,22 +445,39 @@ class UnitaryExpression:
         """Returns the number of distinct variables in the expression."""
         return len(self.variables())
 
-    def drawable(self, labels: str | list[str]):
+    def drawable(self, labels: str | list[str] = None):
         """Creates a human-readable algebraic expression."""
+
+        if labels is None:
+            labels = DEFAULT_LABELS
 
         exponent, operand, addend = self.expressions
 
         if exponent.is_zero:
             return (operand + addend).drawable(labels)
 
-        drawable = "{}^[{}]({})".format(
-            self.symbol, exponent.drawable(labels), operand.drawable(labels)
-        )
+        if exponent.is_one:
+            drawable = "{}({})".format(
+                self.symbol, self.operand.drawable(labels)
+            )
+        else:
+            drawable = "{}^[{}]({})".format(
+                self.symbol, exponent.drawable(labels), operand.drawable(labels)
+            )
 
         if addend.is_zero:
             return drawable
 
         return drawable + " ⨁ " + addend.drawable(labels)
+
+    def __str__(self):
+        return self.drawable()
+
+    __repr__ = __str__
+
+    def draw(self, labels: str | list[str]):
+        """Prints a human-readable algebraic expression."""
+        print(self.drawable(labels))
 
     def evaluate(self, in_: Sequence[bool] | dict[Any, bool]):
         """Evaluates the expression on the given boolean inputs."""
@@ -498,7 +529,7 @@ Expression = BooleanExpression | ExponentExpression | UnitaryExpression
 
 
 class Gate:
-    """Simple quantum CNOT or Fredkin gate.
+    """Simple quantum CNOT, Fredkin or unitary gate.
 
     Parameters
     ----------
@@ -624,13 +655,12 @@ class Gate:
     def _apply_unitary(self, states: list[BooleanExpression]):
         """Applies a general unitary operation."""
 
-        exponent = self._get_control(states)
-
         if "U" in self.sequence:
             target = self.sequence.find("U")
+            exponent = ExponentExpression([self._get_control(states)])
         else:
             target = self.sequence.find("u")
-            exponent = -exponent
+            exponent = ExponentExpression([], [self._get_control(states)])
 
         operand = states[target]
         if isinstance(operand, UnitaryExpression):
@@ -896,6 +926,29 @@ class Circuit:
             product *= states[idx]
         return product
 
+    def save(self, filepath: str):
+        """Saves the circuit to a JSON file."""
+        if isinstance(filepath, str) and "." not in filepath:
+            filepath += ".json"
+
+        sequence = [g.sequence for g in self.gates]
+
+        with open(filepath, "w+") as f:
+            json.dump(sequence, f)
+
+    @classmethod
+    def load(cls, filepath: str):
+        """Loads a circuit from a JSON file."""
+        with open(filepath) as f:
+            sequence: list[str] = json.load(f)
+
+        for idx, seq in enumerate(sequence):
+            sequence[idx] = seq.replace("u", "U'")
+
+        circ = cls(sequence)
+        circ.resize_circuit()
+        return circ
+
     def __or__(self, other):
         cls = self.__class__
         if isinstance(other, str):
@@ -929,6 +982,8 @@ class TruthTable:
 
     def variables(self):
         """Returns the set of variable keys appearing in the expressions."""
+        if len(self.expressions) == 0:
+            return frozenset()
         return frozenset.union(*(expr.variables() for expr in self.expressions))
 
     def _integer_keys(self):
@@ -965,7 +1020,7 @@ class TruthTable:
 
     def evaluate_expressions(self, in_: Sequence[bool] | dict[Any, bool]):
         """Evaluates the expressions on the given boolean inputs."""
-        return [int(expr.evaluate(in_)) for expr in self.expressions]
+        return [expr.evaluate(in_) for expr in self.expressions]
 
     def iter_rows(self, reverse: bool = False):
         """Generates rows of the truth table for the expressions."""
