@@ -11,4 +11,5 @@ dependencies = [
 [dependency-groups]
 dev = [
     "ipython>=9.10.0",
+    "sympy>=1.14.0",
 ]
